@@ -1,0 +1,160 @@
+---
+title: "Mini Project 5: Database Querying"
+subtitle: "SDS 192: MP5"
+author: 
+- name: Faith De Castro 
+  affiliation: Smith College
+- name: Renee Wu
+  affiliation: Smith College
+date: "`r format(Sys.Date(), '%B %e, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    fig_width: 7
+    fig_height: 6
+    fig_caption: true
+    code_folding: show
+    df_print: paged
+editor_options: 
+  chunk_output_type: inline
+references:
+- id: xie2016bookdown
+  type: book
+  title: "Bookdown: Authoring books and technical documents with R markdown"
+  author: 
+  - family: Xie
+    given: Yihui
+  issued:
+    year: 2016
+  publisher: CRC Press
+  url: https://bookdown.org/yihui/rmarkdown/
+---
+
+
+```{r setup, include=FALSE, echo=FALSE}
+library(tidyverse)
+library(sds192)
+library(RMySQL)
+library(leaflet)
+library(sf)
+db <- dbConnect(
+  MySQL(), 
+  host = "scidb.smith.edu", 
+  user = "sds192", 
+  password = "DSismfc@S", 
+  dbname = "yelp"
+)
+knitr::opts_chunk$set(
+  message = FALSE,
+  echo = TRUE, 
+  connection = db, 
+  max.print = 20
+)
+```
+
+
+## Introduction
+Yelp, the widely used business review site, emphasizes the saying “the customer is always right” by allowing for customers to candidly share their experiences at both mom-and-pop shops and chain stores. Because of Yelp’s popularity, star ratings on the apps are often essential to the survival of family-owned businesses. But what do ratings mean to big companies that offer consistent products nationwide? And does store location impact the number or quality of ratings and reviews? To get a snapshot of these questions, we used data collected by Yelp to plot all the Starbucks in the Phoenix metro area and compare the number of reviews and average star ratings (1-5) to store location. 
+
+![](https://i.insider.com/5242f8daecad0405767d58bb?width=1100&format=jpeg&auto=webp)
+
+## Exploratory Data Analysis
+
+Given the nature of our question, we sought to isolate a subset of reviews within a metropolitan area to examine how location and number of reviews affect a business. To accomplish this, we chose Starbucks, a commonplace coffee shop chain since factors such as the quality of the menu items would be constant.[^github] Initially, we wanted to examine user data in association with those store locations, but due to the data containing users’ Yelp display name, we believed it was unethical as they did not consent to having their names be used in such a manner and Yelp users with a high number of overall reviews could be more easily identified. Furthermore, it is questionable by Yelp to release the user profile name information, as there could be a risk that their location could be triangulated through their reviews. Since this violates the principle of protecting the privacy and security of individuals represented in data, we omitted it from our data visualization. [^dataethics]
+
+
+```{sql, connection=db, output.var="yelp_reviews"}
+SELECT b.id, b.name, b.open, r.stars, b.city, b.longitude, b.latitude
+FROM reviews r 
+JOIN businesses b ON b.id=r.business_id
+WHERE name LIKE '%Starbucks%'
+AND open='TRUE';
+```
+
+
+
+```{r}
+#Calculating average rating for each location 
+starbucks_avg<-yelp_reviews%>%
+  group_by(id)%>%
+  select(-open)%>%
+  mutate(avg_stars=sum(stars)/n(), 
+         min_star=min(stars), 
+         max_star=max(stars), 
+         num_reviews=n())%>%
+  select(-stars)%>%
+  filter(num_reviews>10)
+#Remove duplicates 
+starbucks_avg<-starbucks_avg[!duplicated(starbucks_avg$id),]
+```
+
+```{r}
+#Create factor column for creating ordered legend in leaflet
+#only light green and dark green custom markers were used due to small range of average reviews
+starbucks_avg<-starbucks_avg%>%
+  mutate(avg_star_rounded=round(avg_stars,digits=0),
+         group=cut(avg_star_rounded,breaks=c(1,2,3,4,5,Inf),
+                   labels=c("yellow","lgreen","dgreen","blue","purple")),
+         star_factor=factor(avg_star_rounded),star_factor=fct_reorder(star_factor,avg_stars))
+
+#Create color palette for legend 
+starbucks_pal<-colorFactor(palette=c("#38ad73","#216744"),domain=starbucks_avg$star_factor,reverse=TRUE)
+
+#Create custom icons for leaflet 
+starbucksIcons<-iconList(yellow=makeIcon("yellow.png",iconWidth=23, iconHeight=35),
+                         lgreen=makeIcon("lgreen.png",iconWidth=23, iconHeight=35),
+                         dgreen=makeIcon("dgreen.png",iconWidth=23, iconHeight=35),
+                         blue=makeIcon("blue.png",iconWidth=23, iconHeight=35),
+                         purple=makeIcon("purple.png",iconWidth=23, iconHeight=35))
+
+```
+
+
+```{r}
+
+#Create leaflet object 
+starbucks_map<-leaflet(data = starbucks_avg) %>% addTiles() %>%
+  addMarkers(~longitude,~latitude,
+             icon=~starbucksIcons[group],
+             popup = paste0("Number of Reviews: ", starbucks_avg$num_reviews),
+             label=paste0("Number of Reviews: ", starbucks_avg$num_reviews))%>%
+  addLegend(pal=starbucks_pal,values=starbucks_avg$star_factor,title="Average Rating",opacity=1)
+
+#Display leaflet object
+starbucks_map
+```
+
+## Analysis
+
+Plotting the Starbucks based on location reveals important geospatial insights. It is interesting to see that locations inside Phoenix Sky Harbor International Airport and off of major highways have lower average ratings, perhaps due to travelers only deeming it necessary to report a bad experience due to the lack of time while catching a flight or getting back on the road. Although we hypothesized that Starbucks across the street from each other might not get as many reviews overall, we would need more data to find if any real correlation exists between the relative proximity of Starbucks and the number of reviews. From the consistent average ratings that can be observed, it can also be argued that most consumers do not take into account the Yelp reviews when visiting a large chain coffee shop such as Starbucks, thus making their Yelp reviews less impactful than those of a locally-owned business. 
+
+## Conclusion
+
+Since every location has the same menu items, it can be assumed that the majority of the reviews are targeted towards the employees and managers of each location. This differs from the experience of locally-owned businesses, as their menus are unique. Thus, they are judged on an additional factor which may affect their rating. Most consumers would not be turned away from a chain store location due to a bad review, but locally owned businesses depend on reviews to maintain a positive reputation. This is especially concerning when considering that Yelp was previously accused of demanding money to scrub away bad reviews, which would provide an unfair advantage to the larger businesses that could afford to do so.[^yelp] The fact that Starbucks stores in the Phoenix area do not have many overall reviews but continue to have many successful branches reflects that the company’s size insulates it from Yelp and allows it to compete with local businesses. 
+
+
+---
+
+## Word count
+
+```{r word_count, message=FALSE, echo=FALSE}
+sds192::text_stats()
+```
+
+
+## Standards
+
+In this assignment, we attempted the following [standards](https://beanumber.github.io/sds192/standards.html):
+
+- `r standard_button("query")`: We met the Query standard because we wrote a SELECT query from scratch to obtain Starbucks reviews in the Phoenix metropolitan area by joining two of the tables within the Yelp database.
+- `r standard_button("relational")`: We mastered the Relational standard because we used joins in the initial SQL query to match reviews to the business location through the business ID. 
+- `r standard_button("ethics")`: We mastered the Ethics standard because we addressed the concerns in the Yelp database where user names were included along with their user ID, which could potentially expose their address. since this violates the Data Values and Principles, we decided not to use that information in our data exploration. Additionally, we examined the ethical responsibilities that Yelp has as a service since fraudulent reviews could impact small business owners' livelihoods. 
+- `r standard_button("github")`: We mastered the GitHub standard because we created a reprex, filed it as an issue, and resolved it. Additionally, we resolved a merge conflict. 
+
+## References
+
+[^github]: Please see [our GitHub repository](https://github.com/sds192-i21/mp5-atlantic-d) for complete code. 
+[^dataethics]: [Data Values and Principles](https://datapractices.org/manifesto/)
+[^yelp]: [Case Study: Yelp Scrubbing Away Bad Reviews](https://www.pagecentertraining.psu.edu/public-relations-ethics/digital-ethics/lesson-2-digital-tools-and-ethics/case-study-yelp-scrubbing-away-bad-reviews/)
